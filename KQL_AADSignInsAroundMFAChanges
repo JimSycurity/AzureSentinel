@@ -1,0 +1,27 @@
+// Detects user signins requiring MFA challenge correlated to changes to their MFA profile - potentially detecting a bad actor altering MFA details
+// Based upon queries by reprise99
+// starttime = the amount of data to look back on, timeframe = the time between flagging a risk event and MFA details being changed
+let starttime = 45d;
+let timeframe = 4h;
+SigninLogs
+| where TimeGenerated > ago(starttime)
+| where AuthenticationRequirement == "multiFactorAuthentication"
+| extend x=todynamic(AuthenticationDetails)
+| mv-expand x
+| extend AuthMethod = tostring(x.authenticationMethod)
+| where AuthMethod != "Previously satisfied"
+| project SignInTime=TimeGenerated, UserPrincipalName, AuthMethod, AppDisplayName, IPAddress, LocationDetails, MfaDetail, UserAgent, RiskState
+| join kind=inner (
+    AuditLogs
+    | where OperationName in ("User registered security info", "User deleted security info")
+    | where Result == "success"
+    | extend UserPrincipalName = tostring(TargetResources[0].userPrincipalName)
+    | project
+        SecurityInfoTime=TimeGenerated,
+        OperationName,
+        UserPrincipalName,
+        Result,
+        ResultReason)
+    on UserPrincipalName
+| where (SecurityInfoTime - SignInTime) between (0min .. timeframe)
+| sort by SignInTime desc 
